@@ -310,7 +310,18 @@ export async function playTrack(
     );
   }
   if (res.status === 403) {
-    throw new Error('Spotify Premium is required to control playback.');
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: { reason?: string; message?: string };
+    };
+    const reason = body.error?.reason;
+    if (reason === 'PREMIUM_REQUIRED') {
+      throw new Error('Spotify Premium is required to control playback.');
+    }
+    throw new Error(
+      `Spotify rejected playback${reason ? ` (${reason})` : ''}. If you have Premium, ` +
+        'the app owner needs to add your Spotify email under Dashboard → ' +
+        'User Management (this app runs in dev mode, max 5 users).',
+    );
   }
   if (!res.ok && res.status !== 204) {
     throw new Error(`Playback failed (${res.status}).`);

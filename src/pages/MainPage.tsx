@@ -79,6 +79,7 @@ export default function MainPage({ setPage, authError, onClearAuthError }: Props
       markTrackPlayed(track.id);
       setIsPlaying(true);
       setPlaybackError(null);
+      setLoadingPlayback(false);
     };
 
     try {

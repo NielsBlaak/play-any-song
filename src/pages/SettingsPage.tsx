@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { clearStoredToken } from '../auth/spotify-pkce';
 import {
   extractPlaylistId,
@@ -36,12 +36,33 @@ export default function SettingsPage({ onBack }: Props) {
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const successTimeoutRef = useRef<number | null>(null);
 
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [userPlaylistsLoading, setUserPlaylistsLoading] = useState(false);
   const [userPlaylistsError, setUserPlaylistsError] = useState<string | null>(null);
 
   const hasLoaded = tracks.length > 0;
+
+  useEffect(() => {
+    return () => {
+      if (successTimeoutRef.current !== null) {
+        window.clearTimeout(successTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  function flashSuccess(message: string) {
+    setSuccess(message);
+    if (successTimeoutRef.current !== null) {
+      window.clearTimeout(successTimeoutRef.current);
+    }
+    successTimeoutRef.current = window.setTimeout(() => {
+      setSuccess(null);
+      successTimeoutRef.current = null;
+    }, 3500);
+  }
 
   // Refresh the user's Spotify playlists every time Settings opens.
   useEffect(() => {
@@ -96,26 +117,29 @@ export default function SettingsPage({ onBack }: Props) {
   async function handleLoad() {
     const enabledDefaults = defaultPlaylists.filter((p) => p.enabled);
     const enabledCustoms = customPlaylists.filter((p) => p.enabled);
-    const selectedUser = userPlaylists.filter((p) =>
-      userPlaylistSelections.includes(p.id),
+    // Derive personal-playlist URLs from the persisted selection IDs directly,
+    // so a Reload click works even before fetchUserPlaylists has resolved.
+    const selectedUserUrls = userPlaylistSelections.map(
+      (id) => `https://open.spotify.com/playlist/${id}`,
     );
 
     if (
       enabledDefaults.length === 0 &&
       enabledCustoms.length === 0 &&
-      selectedUser.length === 0
+      selectedUserUrls.length === 0
     ) {
       setError('Pick at least one playlist to load.');
       return;
     }
 
-    const needsApi = enabledCustoms.length > 0 || selectedUser.length > 0;
+    const needsApi = enabledCustoms.length > 0 || selectedUserUrls.length > 0;
     if (needsApi && !accessToken) {
       setError('Log in with Spotify first to load custom or personal playlists.');
       return;
     }
 
     setError(null);
+    setSuccess(null);
     setLoading(true);
     try {
       const bundled = await loadBundledPlaylists();
@@ -134,8 +158,8 @@ export default function SettingsPage({ onBack }: Props) {
         for (const p of enabledCustoms) {
           results.push(await fetchPlaylist(p.url, accessToken));
         }
-        for (const p of selectedUser) {
-          results.push(await fetchPlaylist(p.url, accessToken));
+        for (const url of selectedUserUrls) {
+          results.push(await fetchPlaylist(url, accessToken));
         }
       }
 
@@ -151,6 +175,11 @@ export default function SettingsPage({ onBack }: Props) {
       setTracks(
         merged,
         results.map((r) => r.name),
+      );
+      flashSuccess(
+        `Loaded ${merged.length} songs from ${results.length} playlist${
+          results.length === 1 ? '' : 's'
+        }.`,
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -335,6 +364,13 @@ export default function SettingsPage({ onBack }: Props) {
         {error && (
           <div style={s.errorBox}>
             <p style={s.errorText}>{error}</p>
+          </div>
+        )}
+
+        {/* Success */}
+        {success && (
+          <div style={s.successBox} role="status" aria-live="polite">
+            <p style={s.successText}>{success}</p>
           </div>
         )}
 
@@ -569,6 +605,15 @@ const s: Record<string, React.CSSProperties> = {
     marginBottom: 12,
   },
   errorText: { color: colors.danger, fontSize: 13, lineHeight: 1.5 },
+
+  successBox: {
+    backgroundColor: colors.pastelMint + '22',
+    border: `1px solid ${colors.pastelMint}88`,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  successText: { color: colors.pastelMint, fontSize: 13, lineHeight: 1.5, fontWeight: 600 },
 
   loadBtn: {
     backgroundColor: colors.primary,
