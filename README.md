@@ -6,7 +6,7 @@ A Hitster-style card game powered by Spotify. Tap a button, get a random track f
 
 ## Live demo
 
-[https://nielsblaak.github.io/play-any-song/](https://nielsblaak.github.io/play-any-song/)
+[https://NielsBlaak.github.io/play-any-song/](https://NielsBlaak.github.io/play-any-song/)
 
 > The live demo runs in Spotify **Development Mode**, which limits access to 5 pre-approved users. If you want to try it yourself, the easiest path is to clone the repo and use your own Spotify app — see [Local setup](#local-setup).
 
@@ -34,7 +34,7 @@ A Hitster-style card game powered by Spotify. Tap a button, get a random track f
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and click **Create app**.
 2. Fill in name, description (anything you like), and add the following **Redirect URIs**:
    - `http://127.0.0.1:5173/` &nbsp;— for local dev
-   - `https://<your-github-username>.github.io/play-any-song/` &nbsp;— if deploying to GitHub Pages
+   - `https://NielsBlaak.github.io/play-any-song/` &nbsp;— if deploying your own copy to GitHub Pages (replace `NielsBlaak` with your username when forking)
 3. Select **Web API** under "Which API/SDKs are you planning to use?"
 4. Save, then open the app's **Settings** page and copy the **Client ID**.
 5. Open **User Management** and add the Spotify email of any user (yourself included — up to 5) who should be allowed to log in. Development Mode caps usage at 5 users; the Extended Quota tier requires a registered business and 250K MAU, so this app stays in Dev Mode.
@@ -53,7 +53,7 @@ playlist-read-collaborative
 ## Local setup
 
 ```bash
-git clone https://github.com/<your-github-username>/play-any-song.git
+git clone https://github.com/NielsBlaak/play-any-song.git
 cd play-any-song
 cp .env.example .env
 # Paste your Spotify Client ID into .env, then:
@@ -77,7 +77,7 @@ The `.github/workflows/deploy.yml` workflow builds and publishes to GitHub Pages
 1. Fork or push this repo to your own GitHub account.
 2. In **Settings → Pages**, set the source to **GitHub Actions**.
 3. In **Settings → Secrets and variables → Actions → Variables**, add `VITE_SPOTIFY_CLIENT_ID` with your Client ID. (Client IDs in PKCE apps are public — they end up in the bundle anyway — so a repo variable is fine.)
-4. Push to `main`. The first run will publish to `https://<your-github-username>.github.io/play-any-song/`.
+4. Push to `main`. The first run will publish to `https://NielsBlaak.github.io/play-any-song/` (or your fork's equivalent URL).
 5. Register that URL as a redirect URI in your Spotify app (see step 2 of Dashboard setup).
 
 ## Scripts
