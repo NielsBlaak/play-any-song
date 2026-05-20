@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "play-any-song",
+    "slug": "play-any-song",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f0f1a"
+    },
+    "scheme": "play-any-song",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.playanysonghitster.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.playanysonghitster.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Play Any Song to access your camera to scan QR codes."
+        }
+      ],
+      "expo-web-browser",
+      "react-native-google-cast"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "633ad5f4-02d1-48cb-8155-63d97b2fbe33"
+      }
+    }
+  }
+}
