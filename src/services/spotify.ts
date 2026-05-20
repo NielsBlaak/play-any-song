@@ -205,6 +205,13 @@ export async function fetchPlaylistName(
 
 // ─── Player API ──────────────────────────────────────────────────────────────
 
+export interface PlaybackDevice {
+  id: string;
+  name: string;
+  type: string;
+  is_active: boolean;
+}
+
 async function playerFetch(
   endpoint: string,
   method: string,
@@ -246,6 +253,36 @@ export async function playTrack(
   if (!res.ok && res.status !== 204) {
     throw new Error(`Playback failed (${res.status}).`);
   }
+}
+
+export async function getAvailableDevices(
+  accessToken: string,
+): Promise<PlaybackDevice[]> {
+  const res = await playerFetch('/me/player/devices', 'GET', accessToken);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { devices?: PlaybackDevice[] };
+  return data.devices ?? [];
+}
+
+/**
+ * Poll for an available Spotify device. Returns the first device found (active
+ * preferred), or null on timeout. Used to wake playback after the user opens
+ * the Spotify app — Spotify registers it as a device within a few seconds.
+ */
+export async function waitForDevice(
+  accessToken: string,
+  timeoutMs = 8000,
+  intervalMs = 1000,
+): Promise<PlaybackDevice | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const devices = await getAvailableDevices(accessToken);
+    if (devices.length > 0) {
+      return devices.find((d) => d.is_active) ?? devices[0] ?? null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
 }
 
 export async function pausePlayback(accessToken: string): Promise<void> {

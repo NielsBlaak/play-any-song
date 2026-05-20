@@ -5,6 +5,7 @@ import {
   getTrackYear,
   pickRandom,
   playTrack,
+  waitForDevice,
   type SpotifyTrack,
 } from '../services/spotify';
 import { useSongStore } from '../store/songStore';
@@ -73,19 +74,42 @@ export default function MainPage({ setPage, authError, onClearAuthError }: Props
     setRevealed(false);
     setCurrentTrack(track);
     setCardColor(pickCardColor());
-    try {
-      await playTrack(track.uri, accessToken);
+
+    const succeed = () => {
       markTrackPlayed(track.id);
       setIsPlaying(true);
+      setPlaybackError(null);
+    };
+
+    try {
+      await playTrack(track.uri, accessToken);
+      succeed();
+      return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
-      if (msg.toLowerCase().includes('no active spotify device')) {
-        window.open('https://open.spotify.com', '_blank');
-        setPlaybackError('No active Spotify device. Open Spotify, start playing anything, then tap Retry.');
-        setPendingRetryTrack(track);
-      } else {
+
+      if (!msg.toLowerCase().includes('no active spotify device')) {
         setPlaybackError(msg);
+        setCurrentTrack(null);
+        setLoadingPlayback(false);
+        return;
       }
+    }
+
+    // No active device — try to wake Spotify and auto-retry.
+    setPlaybackError('Opening Spotify… playback will start in a few seconds.');
+    window.open('https://open.spotify.com', '_blank');
+
+    try {
+      const device = await waitForDevice(accessToken);
+      if (!device) throw new Error('timeout');
+      await playTrack(track.uri, accessToken, device.id);
+      succeed();
+    } catch {
+      setPlaybackError(
+        'Couldn’t reach Spotify automatically. Open Spotify, start playing anything, then tap Retry.',
+      );
+      setPendingRetryTrack(track);
       setCurrentTrack(null);
     } finally {
       setLoadingPlayback(false);
