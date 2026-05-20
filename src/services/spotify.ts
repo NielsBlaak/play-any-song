@@ -94,6 +94,24 @@ interface RawTrack {
   artists: RawArtist[];
   album?: { release_date?: string };
   uri: string;
+  external_ids?: { isrc?: string };
+}
+
+/**
+ * Parse the year-of-recording from an ISRC code (chars 5–6 are the year).
+ *
+ * For Hitster-style "guess the year" gameplay this is more accurate than
+ * Spotify's album.release_date — that field returns the release date of the
+ * specific album, so a 1985 song on a 2008 greatest-hits compilation reads
+ * as 2008. The ISRC stays with the original recording.
+ */
+function parseIsrcYear(isrc: string | undefined): string | null {
+  if (!isrc || isrc.length < 7) return null;
+  const yy = Number.parseInt(isrc.substring(5, 7), 10);
+  if (!Number.isFinite(yy)) return null;
+  const currentYy = new Date().getFullYear() % 100;
+  const year = yy <= currentYy ? 2000 + yy : 1900 + yy;
+  return String(year);
 }
 
 // Post-Feb-2026 shape: the wrapper renamed `tracks` → `items`, and each entry's
@@ -132,11 +150,15 @@ export function extractTrackId(url: string): string | null {
 }
 
 function parseTrack(t: RawTrack): SpotifyTrack {
+  // Prefer the ISRC year (year of original recording) over album.release_date
+  // (year of THIS album, which inflates remasters/compilations).
+  const isrcYear = parseIsrcYear(t.external_ids?.isrc);
+  const releaseDate = isrcYear ?? t.album?.release_date ?? '';
   return {
     id: t.id,
     name: t.name,
     artists: t.artists,
-    album: { release_date: t.album?.release_date ?? '' },
+    album: { release_date: releaseDate },
     uri: t.uri,
     trackUrl: `https://open.spotify.com/track/${t.id}`,
     isGroup: t.artists.length > 1,
@@ -159,7 +181,7 @@ export async function fetchPlaylist(
   const headers = { Authorization: `Bearer ${accessToken}` };
 
   const res = await fetchWithRetry(
-    `${SPOTIFY_API_BASE}/playlists/${playlistId}?fields=name,owner(id,display_name),items(items(item(id,name,artists(id,name),album(release_date),uri)),next,total)`,
+    `${SPOTIFY_API_BASE}/playlists/${playlistId}?fields=name,owner(id,display_name),items(items(item(id,name,artists(id,name),album(release_date),uri,external_ids)),next,total)`,
     { headers },
   );
 
