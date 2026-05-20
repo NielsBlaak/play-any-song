@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { getStoredToken, storeToken, clearStoredToken } from '../auth/spotify-pkce';
 import { type PlaylistResult, type SpotifyTrack } from '../services/spotify';
 
@@ -19,6 +20,13 @@ export interface DefaultPlaylist {
   id: string;
   name: string;
   url: string;
+  enabled: boolean;
+}
+
+export interface CustomPlaylist {
+  id: string; // extractPlaylistId(url) — stable, dedupes accidental re-adds
+  url: string;
+  name: string;
   enabled: boolean;
 }
 
@@ -88,8 +96,15 @@ interface SongStore {
   isLoadingPlaylist: boolean;
   playlistError: string | null;
 
-  // Default playlists
+  // Default playlists (bundled, persisted toggles)
   defaultPlaylists: DefaultPlaylist[];
+
+  // User-saved custom playlists (persisted)
+  customPlaylists: CustomPlaylist[];
+
+  // User's own Spotify playlists — only the toggled IDs are persisted; the
+  // playlist metadata (name, image) is refetched in Settings each time.
+  userPlaylistSelections: string[];
 
   // Spotify user auth
   accessToken: string | null;
@@ -103,9 +118,16 @@ interface SongStore {
 
   // Actions
   setTracks: (tracks: SpotifyTrack[], names: string[]) => void;
+  appendTracks: (tracks: SpotifyTrack[], names: string[]) => void;
   setLoadingPlaylist: (loading: boolean) => void;
   setPlaylistError: (error: string | null) => void;
   toggleDefaultPlaylist: (id: string) => void;
+
+  addCustomPlaylist: (playlist: CustomPlaylist) => void;
+  removeCustomPlaylist: (id: string) => void;
+  toggleCustomPlaylist: (id: string) => void;
+
+  toggleUserPlaylistSelection: (id: string) => void;
 
   setAccessToken: (token: string | null, expiresIn?: number) => void;
 
@@ -116,49 +138,106 @@ interface SongStore {
   resetPlayedTracks: () => void;
 }
 
-export const useSongStore = create<SongStore>((set) => ({
-  tracks: [],
-  loadedNames: [],
-  isLoadingPlaylist: false,
-  playlistError: null,
+export const useSongStore = create<SongStore>()(
+  persist(
+    (set) => ({
+      tracks: [],
+      loadedNames: [],
+      isLoadingPlaylist: false,
+      playlistError: null,
 
-  defaultPlaylists: DEFAULT_PLAYLISTS,
+      defaultPlaylists: DEFAULT_PLAYLISTS,
+      customPlaylists: [],
+      userPlaylistSelections: [],
 
-  accessToken: storedToken,
-  isAuthenticated: storedToken !== null,
+      accessToken: storedToken,
+      isAuthenticated: storedToken !== null,
 
-  isPlaying: false,
-  isLoadingPlayback: false,
-  playbackError: null,
-  playedTrackIds: [],
+      isPlaying: false,
+      isLoadingPlayback: false,
+      playbackError: null,
+      playedTrackIds: [],
 
-  setTracks: (tracks, names) => set({ tracks, loadedNames: names }),
-  setLoadingPlaylist: (isLoadingPlaylist) => set({ isLoadingPlaylist }),
-  setPlaylistError: (playlistError) => set({ playlistError }),
-  toggleDefaultPlaylist: (id) =>
-    set((state) => ({
-      defaultPlaylists: state.defaultPlaylists.map((p) =>
-        p.id === id ? { ...p, enabled: !p.enabled } : p,
-      ),
-    })),
+      setTracks: (tracks, names) => set({ tracks, loadedNames: names }),
+      appendTracks: (newTracks, newNames) =>
+        set((state) => {
+          const seen = new Set(state.tracks.map((t) => t.id));
+          const additions = newTracks.filter((t) => !seen.has(t.id));
+          if (additions.length === 0 && newNames.length === 0) return state;
+          return {
+            tracks: [...state.tracks, ...additions],
+            loadedNames: [...state.loadedNames, ...newNames],
+          };
+        }),
+      setLoadingPlaylist: (isLoadingPlaylist) => set({ isLoadingPlaylist }),
+      setPlaylistError: (playlistError) => set({ playlistError }),
+      toggleDefaultPlaylist: (id) =>
+        set((state) => ({
+          defaultPlaylists: state.defaultPlaylists.map((p) =>
+            p.id === id ? { ...p, enabled: !p.enabled } : p,
+          ),
+        })),
 
-  setAccessToken: (accessToken, expiresIn = 3600) => {
-    if (accessToken) {
-      storeToken(accessToken, expiresIn);
-    } else {
-      clearStoredToken();
-    }
-    set({ accessToken, isAuthenticated: accessToken !== null });
-  },
+      addCustomPlaylist: (playlist) =>
+        set((state) =>
+          state.customPlaylists.some((p) => p.id === playlist.id)
+            ? {
+                customPlaylists: state.customPlaylists.map((p) =>
+                  p.id === playlist.id ? { ...p, enabled: true } : p,
+                ),
+              }
+            : { customPlaylists: [...state.customPlaylists, playlist] },
+        ),
+      removeCustomPlaylist: (id) =>
+        set((state) => ({
+          customPlaylists: state.customPlaylists.filter((p) => p.id !== id),
+        })),
+      toggleCustomPlaylist: (id) =>
+        set((state) => ({
+          customPlaylists: state.customPlaylists.map((p) =>
+            p.id === id ? { ...p, enabled: !p.enabled } : p,
+          ),
+        })),
 
-  setIsPlaying: (isPlaying) => set({ isPlaying }),
-  setLoadingPlayback: (isLoadingPlayback) => set({ isLoadingPlayback }),
-  setPlaybackError: (playbackError) => set({ playbackError }),
-  markTrackPlayed: (id) =>
-    set((state) =>
-      state.playedTrackIds.includes(id)
-        ? state
-        : { playedTrackIds: [...state.playedTrackIds, id] },
-    ),
-  resetPlayedTracks: () => set({ playedTrackIds: [] }),
-}));
+      toggleUserPlaylistSelection: (id) =>
+        set((state) =>
+          state.userPlaylistSelections.includes(id)
+            ? {
+                userPlaylistSelections: state.userPlaylistSelections.filter(
+                  (x) => x !== id,
+                ),
+              }
+            : { userPlaylistSelections: [...state.userPlaylistSelections, id] },
+        ),
+
+      setAccessToken: (accessToken, expiresIn = 3600) => {
+        if (accessToken) {
+          storeToken(accessToken, expiresIn);
+        } else {
+          clearStoredToken();
+        }
+        set({ accessToken, isAuthenticated: accessToken !== null });
+      },
+
+      setIsPlaying: (isPlaying) => set({ isPlaying }),
+      setLoadingPlayback: (isLoadingPlayback) => set({ isLoadingPlayback }),
+      setPlaybackError: (playbackError) => set({ playbackError }),
+      markTrackPlayed: (id) =>
+        set((state) =>
+          state.playedTrackIds.includes(id)
+            ? state
+            : { playedTrackIds: [...state.playedTrackIds, id] },
+        ),
+      resetPlayedTracks: () => set({ playedTrackIds: [] }),
+    }),
+    {
+      name: 'play-any-song:store',
+      version: 1,
+      partialize: (state) => ({
+        defaultPlaylists: state.defaultPlaylists,
+        customPlaylists: state.customPlaylists,
+        userPlaylistSelections: state.userPlaylistSelections,
+      }),
+    },
+  ),
+);

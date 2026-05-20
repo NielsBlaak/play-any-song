@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { exchangeCodeForToken } from './auth/spotify-pkce';
+import { fetchPlaylist } from './services/spotify';
 import {
   loadBundledPlaylists,
   mergeBundledTracks,
@@ -12,8 +13,17 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 export type Page = 'main' | 'settings';
 
 export default function App() {
-  const { isAuthenticated, setAccessToken, tracks, defaultPlaylists, setTracks } =
-    useSongStore();
+  const {
+    isAuthenticated,
+    setAccessToken,
+    tracks,
+    defaultPlaylists,
+    customPlaylists,
+    userPlaylistSelections,
+    accessToken,
+    setTracks,
+    appendTracks,
+  } = useSongStore();
   const [page, setPage] = useState<Page>('main');
   const [authError, setAuthError] = useState<string | null>(null);
   const [exchanging, setExchanging] = useState(false);
@@ -52,10 +62,13 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lazy-load the bundled default tracks after first paint so the ~1.5 MB JSON
-  // ships as its own chunk instead of blocking the initial shell.
+  // ships as its own chunk instead of blocking the initial shell. Then, if the
+  // user has saved custom or personal playlists selected, fetch those too and
+  // append (the existing 90-day fetchPlaylist cache makes warm loads instant).
   useEffect(() => {
     if (tracks.length > 0) return;
     let cancelled = false;
+
     loadBundledPlaylists()
       .then((bundled) => {
         if (cancelled) return;
@@ -68,10 +81,41 @@ export default function App() {
       .catch(() => {
         // Bundled playlist load failed — settings page can still fetch via the API.
       });
+
+    if (accessToken) {
+      const enabledCustoms = customPlaylists.filter((p) => p.enabled);
+      const personalUrls = userPlaylistSelections.map(
+        (id) => `https://open.spotify.com/playlist/${id}`,
+      );
+      const remoteFetches = [
+        ...enabledCustoms.map((p) => fetchPlaylist(p.url, accessToken)),
+        ...personalUrls.map((url) => fetchPlaylist(url, accessToken)),
+      ];
+
+      for (const promise of remoteFetches) {
+        promise
+          .then((result) => {
+            if (cancelled) return;
+            appendTracks(result.tracks, [result.name]);
+          })
+          .catch(() => {
+            // One playlist failing shouldn't break the others.
+          });
+      }
+    }
+
     return () => {
       cancelled = true;
     };
-  }, [tracks.length, defaultPlaylists, setTracks]);
+  }, [
+    tracks.length,
+    defaultPlaylists,
+    customPlaylists,
+    userPlaylistSelections,
+    accessToken,
+    setTracks,
+    appendTracks,
+  ]);
 
   if (exchanging) {
     return (

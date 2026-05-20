@@ -203,6 +203,68 @@ export async function fetchPlaylistName(
   return (await fetchPlaylist(playlistUrl, accessToken)).name;
 }
 
+// ─── User playlists ──────────────────────────────────────────────────────────
+
+export interface UserPlaylist {
+  id: string;
+  name: string;
+  url: string;
+  imageUrl: string | null;
+  trackCount: number;
+  ownerName: string;
+}
+
+interface RawUserPlaylist {
+  id: string;
+  name: string;
+  images?: { url: string }[] | null;
+  tracks?: { total?: number };
+  owner?: { display_name?: string };
+  external_urls?: { spotify?: string };
+}
+
+interface UserPlaylistsResponse {
+  items?: RawUserPlaylist[];
+  next?: string | null;
+}
+
+/**
+ * Fetch every playlist the current user owns or follows. Paginates through
+ * `/me/playlists` 50 at a time. Requires `playlist-read-private` and
+ * `playlist-read-collaborative` scopes (already requested by the auth flow).
+ */
+export async function fetchUserPlaylists(accessToken: string): Promise<UserPlaylist[]> {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const result: UserPlaylist[] = [];
+
+  let url: string | null = `${SPOTIFY_API_BASE}/me/playlists?limit=50`;
+  while (url) {
+    const res: Response = await fetchWithRetry(url, { headers });
+    if (!res.ok) {
+      throw new Error(`Failed to load your playlists (${res.status})`);
+    }
+    const page = (await res.json()) as UserPlaylistsResponse;
+    for (const p of page.items ?? []) {
+      if (!p?.id) continue;
+      // Spotify returns images largest-first; the last entry is the smallest
+      // thumbnail, ideal for a 40-px row icon.
+      const images = p.images ?? [];
+      const imageUrl = images[images.length - 1]?.url ?? null;
+      result.push({
+        id: p.id,
+        name: p.name,
+        url: p.external_urls?.spotify ?? `https://open.spotify.com/playlist/${p.id}`,
+        imageUrl,
+        trackCount: p.tracks?.total ?? 0,
+        ownerName: p.owner?.display_name ?? '',
+      });
+    }
+    url = page.next ?? null;
+  }
+
+  return result;
+}
+
 // ─── Player API ──────────────────────────────────────────────────────────────
 
 export interface PlaybackDevice {
