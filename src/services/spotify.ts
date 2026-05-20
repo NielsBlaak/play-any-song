@@ -42,7 +42,9 @@ async function fetchWithRetry(
 // ─── Persistent playlist cache (localStorage) ────────────────────────────────
 
 const CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 3 months
-const CACHE_KEY_PREFIX = 'playlist_cache:';
+// Bumped to `_v2` to invalidate caches from before the Spotify Feb 2026 field
+// migration (when responses still used the old `tracks` / `track` shape).
+const CACHE_KEY_PREFIX = 'playlist_cache_v2:';
 
 interface CacheEntry {
   result: PlaylistResult;
@@ -94,16 +96,21 @@ interface RawTrack {
   uri: string;
 }
 
+// Post-Feb-2026 shape: the wrapper renamed `tracks` → `items`, and each entry's
+// track payload renamed `track` → `item`. For playlists the current user does
+// NOT own or collaborate on, `items` is absent entirely.
 interface PaginatedTracksResponse {
-  items: ({ track: RawTrack | null } | null)[];
+  items: ({ item: RawTrack | null } | null)[];
   next: string | null;
 }
 
 interface PlaylistResponse {
   name?: string;
-  tracks?: {
-    items?: ({ track: RawTrack | null } | null)[];
+  owner?: { id?: string; display_name?: string };
+  items?: {
+    items?: ({ item: RawTrack | null } | null)[];
     next?: string | null;
+    total?: number;
   };
 }
 
@@ -152,7 +159,7 @@ export async function fetchPlaylist(
   const headers = { Authorization: `Bearer ${accessToken}` };
 
   const res = await fetchWithRetry(
-    `${SPOTIFY_API_BASE}/playlists/${playlistId}?fields=name,tracks(items(track(id,name,artists(id,name),album(release_date),uri)),next,total)`,
+    `${SPOTIFY_API_BASE}/playlists/${playlistId}?fields=name,owner(id,display_name),items(items(item(id,name,artists(id,name),album(release_date),uri)),next,total)`,
     { headers },
   );
 
@@ -163,21 +170,32 @@ export async function fetchPlaylist(
 
   const playlist = (await res.json()) as PlaylistResponse;
   const name: string = playlist.name ?? playlistUrl;
-  const tracks: SpotifyTrack[] = [];
 
-  for (const item of playlist.tracks?.items ?? []) {
-    const t = item?.track;
+  // After Spotify's Feb 2026 dev-mode migration, the `items` field is omitted
+  // entirely for playlists the user does not own or collaborate on. Surface
+  // that explicitly so the user knows why it failed.
+  if (!playlist.items) {
+    const owner = playlist.owner?.display_name ?? 'someone else';
+    throw new Error(
+      `“${name}” is owned by ${owner}. Spotify dev mode no longer returns ` +
+        `tracks for playlists you don’t own or collaborate on (Feb 2026 API change).`,
+    );
+  }
+
+  const tracks: SpotifyTrack[] = [];
+  for (const item of playlist.items.items ?? []) {
+    const t = item?.item;
     if (!t?.id) continue;
     tracks.push(parseTrack(t));
   }
 
-  let nextUrl: string | null = playlist.tracks?.next ?? null;
+  let nextUrl: string | null = playlist.items.next ?? null;
   while (nextUrl) {
     const pageRes = await fetchWithRetry(nextUrl, { headers });
     if (!pageRes.ok) break;
     const page = (await pageRes.json()) as PaginatedTracksResponse;
     for (const item of page.items ?? []) {
-      const t = item?.track;
+      const t = item?.item;
       if (!t?.id) continue;
       tracks.push(parseTrack(t));
     }
@@ -203,6 +221,18 @@ export async function fetchPlaylistName(
   return (await fetchPlaylist(playlistUrl, accessToken)).name;
 }
 
+// ─── Current user ────────────────────────────────────────────────────────────
+
+export async function fetchCurrentUserId(accessToken: string): Promise<string> {
+  const res = await fetchWithRetry(`${SPOTIFY_API_BASE}/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load profile (${res.status})`);
+  const data = (await res.json()) as { id?: string };
+  if (!data.id) throw new Error('Spotify profile missing id field');
+  return data.id;
+}
+
 // ─── User playlists ──────────────────────────────────────────────────────────
 
 export interface UserPlaylist {
@@ -212,14 +242,20 @@ export interface UserPlaylist {
   imageUrl: string | null;
   trackCount: number;
   ownerName: string;
+  ownerId: string;
+  collaborative: boolean;
 }
 
 interface RawUserPlaylist {
   id: string;
   name: string;
   images?: { url: string }[] | null;
+  // Post-Feb-2026: `tracks` renamed to `items`. Read both for graceful
+  // handling if the rollout is mid-flight on a given account.
+  items?: { total?: number };
   tracks?: { total?: number };
-  owner?: { display_name?: string };
+  owner?: { id?: string; display_name?: string };
+  collaborative?: boolean;
   external_urls?: { spotify?: string };
 }
 
@@ -255,8 +291,10 @@ export async function fetchUserPlaylists(accessToken: string): Promise<UserPlayl
         name: p.name,
         url: p.external_urls?.spotify ?? `https://open.spotify.com/playlist/${p.id}`,
         imageUrl,
-        trackCount: p.tracks?.total ?? 0,
+        trackCount: p.items?.total ?? p.tracks?.total ?? 0,
         ownerName: p.owner?.display_name ?? '',
+        ownerId: p.owner?.id ?? '',
+        collaborative: p.collaborative ?? false,
       });
     }
     url = page.next ?? null;

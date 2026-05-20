@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { clearStoredToken } from '../auth/spotify-pkce';
 import {
   extractPlaylistId,
+  fetchCurrentUserId,
   fetchPlaylist,
   fetchPlaylistName,
   fetchUserPlaylists,
@@ -42,6 +43,7 @@ export default function SettingsPage({ onBack }: Props) {
   const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>([]);
   const [userPlaylistsLoading, setUserPlaylistsLoading] = useState(false);
   const [userPlaylistsError, setUserPlaylistsError] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   const hasLoaded = tracks.length > 0;
 
@@ -64,15 +66,20 @@ export default function SettingsPage({ onBack }: Props) {
     }, 3500);
   }
 
-  // Refresh the user's Spotify playlists every time Settings opens.
+  // Refresh the user's Spotify playlists (and profile) every time Settings opens.
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
     setUserPlaylistsLoading(true);
     setUserPlaylistsError(null);
-    fetchUserPlaylists(accessToken)
-      .then((list) => {
-        if (!cancelled) setUserPlaylists(list);
+    Promise.all([
+      fetchUserPlaylists(accessToken),
+      fetchCurrentUserId(accessToken).catch(() => null),
+    ])
+      .then(([list, userId]) => {
+        if (cancelled) return;
+        setUserPlaylists(list);
+        setCurrentUserId(userId);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -87,6 +94,12 @@ export default function SettingsPage({ onBack }: Props) {
       cancelled = true;
     };
   }, [accessToken]);
+
+  function isLoadable(playlist: UserPlaylist): boolean {
+    // Dev-mode apps can only read tracks from playlists the user owns or
+    // collaborates on (Spotify Feb 2026 change).
+    return playlist.collaborative || playlist.ownerId === currentUserId;
+  }
 
   async function handleAddCustom() {
     const url = customUrl.trim();
@@ -269,24 +282,33 @@ export default function SettingsPage({ onBack }: Props) {
         {accessToken &&
           userPlaylists.map((playlist) => {
             const enabled = userPlaylistSelections.includes(playlist.id);
+            const loadable = isLoadable(playlist);
+            const dimmed = !enabled || !loadable;
             return (
               <div
                 key={playlist.id}
-                style={{ ...s.row, ...(!enabled ? s.rowDisabled : {}) }}
+                style={{ ...s.row, ...(dimmed ? s.rowDisabled : {}) }}
+                title={
+                  loadable
+                    ? undefined
+                    : 'Not playable in dev mode — Spotify only allows reading tracks from playlists you own or collaborate on.'
+                }
               >
                 <PlaylistThumb url={playlist.imageUrl} name={playlist.name} />
                 <div style={s.rowText}>
-                  <span style={{ ...s.rowName, ...(!enabled ? s.rowNameMuted : {}) }}>
+                  <span style={{ ...s.rowName, ...(dimmed ? s.rowNameMuted : {}) }}>
                     {playlist.name}
                   </span>
                   <span style={s.rowMeta}>
                     {playlist.trackCount} tracks · {playlist.ownerName}
+                    {!loadable && ' · read-only'}
                   </span>
                 </div>
                 <label className="toggle">
                   <input
                     type="checkbox"
                     checked={enabled}
+                    disabled={!loadable}
                     onChange={() => toggleUserPlaylistSelection(playlist.id)}
                     aria-label={`Include ${playlist.name} in song pool`}
                   />
