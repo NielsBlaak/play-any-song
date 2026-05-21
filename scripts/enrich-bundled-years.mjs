@@ -2,16 +2,15 @@
  * Enrich src/data/defaultTracks.json by replacing each track's
  * `album.release_date` with the ISRC-derived recording year.
  *
- * Why: Spotify's album.release_date returns the date of the ALBUM the track
- * appears on, which for compilations and remasters is the compilation year,
- * not the original. The ISRC's year segment (chars 5–6) is the year of the
- * recording itself — much better for a Hitster-style "guess the year" game.
+ * Uses the Deezer public search API — no auth required, generous rate limits.
+ * Searches by artist + track name and verifies the match before accepting an ISRC.
  *
  * Usage:
- *   node scripts/enrich-bundled-years.mjs <spotify_access_token>
+ *   node scripts/enrich-bundled-years.mjs [playlist_key]
  *
- * Grab a token from devtools while logged into the app:
- *   localStorage.getItem('spotify_access_token')
+ * Examples:
+ *   node scripts/enrich-bundled-years.mjs            # all playlists (~17 min)
+ *   node scripts/enrich-bundled-years.mjs accordeon  # one playlist (~1 min)
  */
 
 import fs from 'fs';
@@ -19,26 +18,27 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SPOTIFY_API = 'https://api.spotify.com/v1';
+const onlyKey = process.argv[2] ?? null;
 
-const token = process.argv[2];
-if (!token) {
-  console.error('Usage: node scripts/enrich-bundled-years.mjs <access_token>');
-  process.exit(1);
-}
+const DEEZER_API = 'https://api.deezer.com';
+const DELAY_MS = 200; // 5 req/s — well within Deezer's limits
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchWithRetry(url, retries = 5) {
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 429 && retries > 0) {
-    const retryAfter = parseInt(res.headers.get('Retry-After') ?? '', 10);
-    const waitSec = Number.isFinite(retryAfter) ? retryAfter : 5;
-    console.log(`  Rate limited — waiting ${waitSec}s (${retries} retries left)`);
-    await sleep(waitSec * 1000);
-    return fetchWithRetry(url, retries - 1);
+function normalize(str) {
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // strip accents
+    .replace(/[^a-z0-9]/g, '');      // keep only alphanumeric
+}
+
+async function fetchDeezer(url, retries = 4) {
+  const res = await fetch(url);
+  if ((res.status === 429 || res.status === 503) && retries > 0) {
+    console.log(`\n  Deezer ${res.status} — waiting 3s…`);
+    await sleep(3000);
+    return fetchDeezer(url, retries - 1);
   }
   return res;
 }
@@ -51,20 +51,28 @@ function parseIsrcYear(isrc) {
   return yy <= currentYy ? 2000 + yy : 1900 + yy;
 }
 
-async function fetchBatchIsrcs(ids) {
-  // /tracks?ids= accepts up to 50 ids
-  const url = `${SPOTIFY_API}/tracks?ids=${ids.join(',')}`;
-  const res = await fetchWithRetry(url);
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Batch fetch failed (${res.status}): ${body}`);
-  }
+async function getIsrc(trackName, artistName) {
+  const q = encodeURIComponent(`${artistName} ${trackName}`);
+  const res = await fetchDeezer(`${DEEZER_API}/search?q=${q}&limit=10`);
+  await sleep(DELAY_MS);
+
+  if (!res.ok) return null;
   const data = await res.json();
-  const result = new Map();
-  for (const track of data.tracks ?? []) {
-    if (track?.id) result.set(track.id, track.external_ids?.isrc ?? null);
+  const results = data.data ?? [];
+
+  const normTitle = normalize(trackName);
+  const normArtist = normalize(artistName);
+
+  // Accept the first result where both title and artist are a close match.
+  for (const item of results) {
+    const t = normalize(item.title ?? '');
+    const a = normalize(item.artist?.name ?? '');
+    const titleMatch = t === normTitle || t.includes(normTitle) || normTitle.includes(t);
+    const artistMatch = a === normArtist || a.includes(normArtist) || normArtist.includes(a);
+    if (titleMatch && artistMatch && item.isrc) return item.isrc;
   }
-  return result;
+
+  return null;
 }
 
 async function main() {
@@ -74,46 +82,47 @@ async function main() {
   let totalTracks = 0;
   let updated = 0;
   let unchanged = 0;
-  let noIsrc = 0;
+  let notFound = 0;
 
   for (const [playlistKey, playlist] of Object.entries(data)) {
     if (!playlist?.tracks?.length) continue;
-    console.log(`\nEnriching "${playlist.name}" (${playlistKey}): ${playlist.tracks.length} tracks`);
+    if (onlyKey && playlistKey !== onlyKey) continue;
 
-    const ids = playlist.tracks.map((t) => t.id);
-    const isrcByTrackId = new Map();
+    const n = playlist.tracks.length;
+    const estMin = Math.ceil((n * DELAY_MS) / 60000);
+    console.log(`\nEnriching "${playlist.name}" (${playlistKey}): ${n} tracks (~${estMin} min)`);
 
-    // Batch in groups of 50
-    for (let i = 0; i < ids.length; i += 50) {
-      const batch = ids.slice(i, i + 50);
-      const batchMap = await fetchBatchIsrcs(batch);
-      for (const [id, isrc] of batchMap) isrcByTrackId.set(id, isrc);
-      process.stdout.write(`  ${Math.min(i + 50, ids.length)}/${ids.length}\r`);
-      await sleep(150); // small breather between batches
-    }
-    process.stdout.write('\n');
-
-    for (const track of playlist.tracks) {
+    for (let i = 0; i < playlist.tracks.length; i++) {
+      const track = playlist.tracks[i];
       totalTracks++;
-      const isrc = isrcByTrackId.get(track.id);
+
+      const artistName = track.artists?.[0]?.name ?? '';
+      const isrc = await getIsrc(track.name, artistName);
       const isrcYear = parseIsrcYear(isrc);
+
       if (isrcYear == null) {
-        noIsrc++;
-        continue;
-      }
-      const oldYear = (track.album?.release_date ?? '').split('-')[0];
-      const newYear = String(isrcYear);
-      if (oldYear === newYear) {
-        unchanged++;
+        notFound++;
       } else {
-        track.album = { ...(track.album ?? {}), release_date: newYear };
-        updated++;
+        const oldYear = (track.album?.release_date ?? '').split('-')[0];
+        const newYear = String(isrcYear);
+        if (oldYear === newYear) {
+          unchanged++;
+        } else {
+          track.album = { ...(track.album ?? {}), release_date: newYear };
+          updated++;
+        }
       }
+
+      process.stdout.write(`  ${i + 1}/${n}  updated:${updated}  not found:${notFound}\r`);
     }
+
+    process.stdout.write('\n');
+    // Save after each playlist so progress isn't lost on interruption.
+    fs.writeFileSync(inPath, JSON.stringify(data, null, 2));
+    console.log(`  Saved. Totals — updated:${updated}  unchanged:${unchanged}  not found:${notFound}`);
   }
 
-  fs.writeFileSync(inPath, JSON.stringify(data, null, 2));
-  console.log(`\nDone. ${updated} tracks updated, ${unchanged} unchanged, ${noIsrc} without ISRC. Saved to ${inPath}`);
+  console.log(`\nDone. ${updated} updated, ${unchanged} unchanged, ${notFound} not found on Deezer.`);
 }
 
 main().catch((err) => {
